@@ -1,4 +1,4 @@
-const http = require('http');  // Import the http module to make HTTP requests
+// Import required modules
 const { Client, GatewayIntentBits, EmbedBuilder, ActivityType } = require('discord.js');
 const { ethers } = require('ethers');
 const fs = require('fs');
@@ -8,6 +8,7 @@ require('dotenv').config();
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
+
 
 // Load environment variables
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -202,38 +203,6 @@ const updateBotStatus = () => {
   }
 };
 
-// Render Port 10000 HTTP Request
-const fetchDataFromRender = () => {
-  const options = {
-    hostname: 'your-render-app.onrender.com',
-    port: 10000,
-    path: '/api/data',  // Adjust the path to your API
-    method: 'GET',
-  };
-
-  const req = http.request(options, (res) => {
-    let data = '';
-
-    res.on('data', (chunk) => {
-      data += chunk;
-    });
-
-    res.on('end', () => {
-      console.log('Data from Render:', data);
-      // You can process the response as needed here
-    });
-  });
-
-  req.on('error', (e) => {
-    console.error('Request failed:', e);
-  });
-
-  req.end();
-};
-
-// Polling interval to fetch data from Render service
-setInterval(fetchDataFromRender, 60000);  // Fetch data every 60 seconds
-
 // Discord Bot Ready Event
 client.once('ready', async () => {
   console.log('Bot is online and starting to poll for events!');
@@ -243,50 +212,231 @@ client.once('ready', async () => {
 
   try {
     if (lastBlock === 0) {
+      // Initialize lastBlock to current block minus some buffer (e.g., 100 blocks)
       const currentBlock = await provider.getBlockNumber();
-      lastBlock = currentBlock - 100;
+      lastBlock = currentBlock - 100; // Adjust the buffer as needed
       console.log(`Starting polling from block number: ${lastBlock}`);
+      // Save the initial lastBlock
       saveState();
     }
   } catch (error) {
     console.error('Error initializing lastBlock:', error);
     process.exit(1);
   }
+
+  // Start polling at defined intervals
+  setInterval(pollEvents, POLL_INTERVAL);
+  // Update bot status every minute
+  setInterval(updateBotStatus, 60000);
 });
 
-// Polling to Track Events
-const pollForEvents = async () => {
-  const currentBlock = await provider.getBlockNumber();
-  const filter = contract.filters.ListingCreated();
-  const events = await contract.queryFilter(filter, lastBlock + 1, currentBlock);
+// Function to Poll for Events
+async function pollEvents() {
+  try {
+    const currentBlock = await provider.getBlockNumber();
+    console.log(`Polling from block ${lastBlock + 1} to ${currentBlock}`);
 
-  if (events.length > 0) {
-    events.forEach(event => {
-      const { listingId, seller, vtruAmount, usdcAmount } = event.args;
+    // Fetch past events
+    const listingEvents = await contract.queryFilter('ListingCreated', lastBlock + 1, currentBlock);
+    const swapEvents = await contract.queryFilter('SwapCompleted', lastBlock + 1, currentBlock);
+    const offerAcceptedEvents = await contract.queryFilter('OfferAccepted', lastBlock + 1, currentBlock);
+
+    console.log(`Found ${listingEvents.length} new ListingCreated event(s), ${swapEvents.length} new SwapCompleted event(s), and ${offerAcceptedEvents.length} new OfferAccepted event(s).`);
+
+    // Process all events
+    const allEvents = [...listingEvents, ...swapEvents, ...offerAcceptedEvents];
+
+    for (const event of allEvents) {
+      const { usdcAmount, vtruAmount } = event.args;
+
+      // Update total amounts
       totalUsdcAmount = totalUsdcAmount.add(usdcAmount);
       totalVtruAmount = totalVtruAmount.add(vtruAmount);
 
-      const embed = new EmbedBuilder()
-        .setColor('#0099ff')
-        .setTitle('New Listing Created')
-        .addFields(
-          { name: 'Listing ID', value: listingId.toString() },
-          { name: 'Seller', value: shortenAddress(seller) },
-          { name: 'VTRU Amount', value: ethers.utils.formatUnits(vtruAmount, 18) },
-          { name: 'USDC Amount', value: ethers.utils.formatUnits(usdcAmount, 6) }
-        );
+      // Save state after processing each event
+      saveState();
 
-      const channel = await client.channels.fetch(DISCORD_CHANNEL_ID);
-      channel.send({ embeds: [embed] });
-    });
+      // Update bot status
+      updateBotStatus();
+
+      // Handle individual events
+      if (event.event === 'ListingCreated') {
+        await handleListingCreated(event);
+      } else if (event.event === 'SwapCompleted') {
+        await handleSwapCompleted(event);
+      } else if (event.event === 'OfferAccepted') {
+        await handleOfferAccepted(event);
+      }
+    }
+
+    // Update lastBlock to the current block
     lastBlock = currentBlock;
     saveState();
-    updateBotStatus();
-  }
-};
 
-// Poll every 30 seconds for new events
-setInterval(pollForEvents, POLL_INTERVAL);
+  } catch (error) {
+    console.error('Error polling for events:', error);
+  }
+}
+
+// Function to handle ListingCreated event
+async function handleListingCreated(event) {
+  const { listingId, seller, vtruAmount, usdcAmount } = event.args;
+  const transactionHash = event.transactionHash;
+
+  // Format amounts
+  const formattedVtru = parseFloat(ethers.utils.formatUnits(vtruAmount, 18));
+  const formattedUsdc = parseFloat(ethers.utils.formatUnits(usdcAmount, 6));
+
+  // Compute ratios
+  const usdcPerVtru = formattedUsdc / formattedVtru;
+  const vtruPerUsdc = formattedVtru / formattedUsdc;
+
+  // Format ratios
+  const formattedUsdcPerVtru = usdcPerVtru.toFixed(6);
+  const formattedVtruPerUsdc = vtruPerUsdc.toFixed(6);
+
+  // Construct the listing URL (direct link without listingId)
+  const listingURL = `https://otcmarket.vercel.app/`;
+
+  // Construct the explorer link
+  const explorerLink = `${EXPLORER_BASE_URL}/${transactionHash}`;
+
+  // Create an Embed Message for ListingCreated
+  const embed = new EmbedBuilder()
+    .setTitle('🚀 **New Listing Created!** 🚀')
+    .setColor('#00FF00')
+    .addFields(
+      { name: '🆔 Listing ID', value: `\`${listingId.toString()}\``, inline: true },
+      { name: '👤 Seller', value: `\`${shortenAddress(seller)}\``, inline: true },
+      { name: '💰 VTRU Amount', value: `\`${formattedVtru} VTRU\``, inline: true },
+      { name: '💵 USDC Amount', value: `\`${formattedUsdc} USDC\``, inline: true },
+      { name: '💱 USDC per VTRU', value: `\`${formattedUsdcPerVtru} USDC/VTRU\``, inline: true },
+      { name: '🔄 VTRU per USDC', value: `\`${formattedVtruPerUsdc} VTRU/USDC\``, inline: true },
+      { name: '🔗 View More', value: `[Visit the OTC Website](${listingURL})`, inline: false },
+      { name: '🔗 Explorer Link', value: `[View Transaction](${explorerLink})`, inline: false }
+    )
+    .setThumbnail('https://swap.vitruveo.xyz/images/coins/wVTRU.png')
+    .setTimestamp()
+    .setFooter({ text: 'VTRU Listings', iconURL: 'https://swap.vitruveo.xyz/images/coins/wVTRU.png' });
+
+  // Send the listing event to the listings channel with @here mention
+  const channel = client.channels.cache.get(DISCORD_CHANNEL_ID);
+  if (channel) {
+    channel.send({
+      content: '@here A new listing has been created!',
+      embeds: [embed],
+      allowed_mentions: { parse: ['everyone'] },
+    })
+    .then(() => console.log(`Posted Listing ID: ${listingId.toString()}`))
+    .catch(err => console.error('Error sending message to Discord:', err));
+  } else {
+    console.error("Discord channel not found for listings! Please check the channel ID.");
+  }
+}
+
+// Function to handle SwapCompleted event
+async function handleSwapCompleted(event) {
+  const { listingId, buyer, vtruAmount, usdcAmount } = event.args;
+  const transactionHash = event.transactionHash;
+
+  // Format amounts
+  const formattedVtru = parseFloat(ethers.utils.formatUnits(vtruAmount, 18));
+  const formattedUsdc = parseFloat(ethers.utils.formatUnits(usdcAmount, 6));
+
+  // Compute ratios
+  const usdcPerVtru = formattedUsdc / formattedVtru;
+  const vtruPerUsdc = formattedVtru / formattedUsdc;
+
+  // Format ratios
+  const formattedUsdcPerVtru = usdcPerVtru.toFixed(6);
+  const formattedVtruPerUsdc = vtruPerUsdc.toFixed(6);
+
+  // Create an Embed Message for SwapCompleted
+  const embed = new EmbedBuilder()
+    .setTitle('🔄 **Swap Completed!** 🔄')
+    .setColor('#FF0000')
+    .addFields(
+      { name: '🆔 Listing ID', value: `\`${listingId.toString()}\``, inline: true },
+      { name: '👤 Buyer', value: `\`${shortenAddress(buyer)}\``, inline: true },
+      { name: '💰 VTRU Amount Swapped', value: `\`${formattedVtru} VTRU\``, inline: true },
+      { name: '💵 USDC Amount Swapped', value: `\`${formattedUsdc} USDC\``, inline: true },
+      { name: '💱 USDC per VTRU', value: `\`${formattedUsdcPerVtru} USDC/VTRU\``, inline: true },
+      { name: '🔄 VTRU per USDC', value: `\`${formattedVtruPerUsdc} VTRU/USDC\``, inline: true },
+      { name: '🔗 Explorer Link', value: `[View Transaction](${EXPLORER_BASE_URL}/${transactionHash})`, inline: false }
+    )
+    .setThumbnail('https://swap.vitruveo.xyz/images/coins/wVTRU.png')
+    .setTimestamp()
+    .setFooter({ text: 'VTRU Swaps', iconURL: 'https://swap.vitruveo.xyz/images/coins/wVTRU.png' });
+
+  // Send the swap event to the swaps channel with @here mention
+  const swapChannel = client.channels.cache.get(SWAP_CHANNEL_ID);
+  if (swapChannel) {
+    swapChannel.send({
+      content: '@here A swap has been completed!',
+      embeds: [embed],
+      allowed_mentions: { parse: ['everyone'] },
+    })
+    .then(() => console.log(`Posted Swap Completed for Listing ID: ${listingId.toString()}`))
+    .catch(err => console.error('Error sending swap message to Discord:', err));
+  } else {
+    console.error("Discord channel not found for swaps! Please check the channel ID.");
+  }
+}
+
+// Function to handle OfferAccepted event
+async function handleOfferAccepted(event) {
+  const { listingId, seller, buyer, vtruAmount, usdcAmount } = event.args;
+  const transactionHash = event.transactionHash;
+
+  // Format amounts
+  const formattedVtru = parseFloat(ethers.utils.formatUnits(vtruAmount, 18));
+  const formattedUsdc = parseFloat(ethers.utils.formatUnits(usdcAmount, 6));
+
+  // Compute ratios
+  const usdcPerVtru = formattedUsdc / formattedVtru;
+  const vtruPerUsdc = formattedVtru / formattedUsdc;
+
+  // Format ratios
+  const formattedUsdcPerVtru = usdcPerVtru.toFixed(6);
+  const formattedVtruPerUsdc = vtruPerUsdc.toFixed(6);
+
+  // Create an Embed Message for OfferAccepted
+  const embed = new EmbedBuilder()
+    .setTitle('💸 **Offer Accepted!** 💸')
+    .setColor('#FFA500')
+    .addFields(
+      { name: '🆔 Listing ID', value: `\`${listingId.toString()}\``, inline: true },
+      { name: '👤 Seller', value: `\`${shortenAddress(seller)}\``, inline: true },
+      { name: '👤 Buyer', value: `\`${shortenAddress(buyer)}\``, inline: true },
+      { name: '💰 VTRU Amount Bought', value: `\`${formattedVtru} VTRU\``, inline: true },
+      { name: '💵 USDC Amount Paid', value: `\`${formattedUsdc} USDC\``, inline: true },
+      { name: '💱 USDC per VTRU', value: `\`${formattedUsdcPerVtru} USDC/VTRU\``, inline: true },
+      { name: '🔄 VTRU per USDC', value: `\`${formattedVtruPerUsdc} VTRU/USDC\``, inline: true },
+      { name: '🔗 Explorer Link', value: `[View Transaction](${EXPLORER_BASE_URL}/${transactionHash})`, inline: false }
+    )
+    .setThumbnail('https://swap.vitruveo.xyz/images/coins/wVTRU.png')
+    .setTimestamp()
+    .setFooter({ text: 'VTRU Purchases', iconURL: 'https://swap.vitruveo.xyz/images/coins/wVTRU.png' });
+
+  // Send the buy event to the buy channel with @here mention
+  const buyChannel = client.channels.cache.get(BUY_CHANNEL_ID);
+  if (buyChannel) {
+    buyChannel.send({
+      content: '@here An offer has been accepted!',
+      embeds: [embed],
+      allowed_mentions: { parse: ['everyone'] },
+    })
+    .then(() => console.log(`Posted OfferAccepted (Buy) for Listing ID: ${listingId.toString()}`))
+    .catch(err => console.error('Error sending buy message to Discord:', err));
+  } else {
+    console.error("Discord channel not found for buy events! Please check the channel ID.");
+  }
+}
+
+// Handle Discord Errors
+client.on('error', (error) => {
+  console.error('Discord Client Error:', error);
+});
 
 // Login to Discord
 client.login(DISCORD_TOKEN);
