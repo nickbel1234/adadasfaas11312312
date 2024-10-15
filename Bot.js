@@ -8,13 +8,6 @@ require('dotenv').config();
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
-// Render expects a web server to bind to a port (use the port from environment variable)
-const PORT = process.env.PORT || 10000; // Fallback to port 3000 if PORT is not set
-
-// Listen to the specified port (for Render)
-app.listen(PORT, () => {
-  console.log(`Server is listening on port ${PORT}`);
-});
 
 // Load environment variables
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -236,212 +229,16 @@ client.once('ready', async () => {
   setInterval(updateBotStatus, 60000);
 });
 
-// Function to Poll for Events
-async function pollEvents() {
-  try {
-    const currentBlock = await provider.getBlockNumber();
-    console.log(`Polling from block ${lastBlock + 1} to ${currentBlock}`);
+// Express server (Optional, only if needed for Render)
+const express = require('express');
+const app = express();
 
-    // Fetch past events
-    const listingEvents = await contract.queryFilter('ListingCreated', lastBlock + 1, currentBlock);
-    const swapEvents = await contract.queryFilter('SwapCompleted', lastBlock + 1, currentBlock);
-    const offerAcceptedEvents = await contract.queryFilter('OfferAccepted', lastBlock + 1, currentBlock);
+// Ensure Render provides the PORT environment variable
+const PORT = process.env.PORT || 3000;
 
-    console.log(`Found ${listingEvents.length} new ListingCreated event(s), ${swapEvents.length} new SwapCompleted event(s), and ${offerAcceptedEvents.length} new OfferAccepted event(s).`);
-
-    // Process all events
-    const allEvents = [...listingEvents, ...swapEvents, ...offerAcceptedEvents];
-
-    for (const event of allEvents) {
-      const { usdcAmount, vtruAmount } = event.args;
-
-      // Update total amounts
-      totalUsdcAmount = totalUsdcAmount.add(usdcAmount);
-      totalVtruAmount = totalVtruAmount.add(vtruAmount);
-
-      // Save state after processing each event
-      saveState();
-
-      // Update bot status
-      updateBotStatus();
-
-      // Handle individual events
-      if (event.event === 'ListingCreated') {
-        await handleListingCreated(event);
-      } else if (event.event === 'SwapCompleted') {
-        await handleSwapCompleted(event);
-      } else if (event.event === 'OfferAccepted') {
-        await handleOfferAccepted(event);
-      }
-    }
-
-    // Update lastBlock to the current block
-    lastBlock = currentBlock;
-    saveState();
-
-  } catch (error) {
-    console.error('Error polling for events:', error);
-  }
-}
-
-// Function to handle ListingCreated event
-async function handleListingCreated(event) {
-  const { listingId, seller, vtruAmount, usdcAmount } = event.args;
-  const transactionHash = event.transactionHash;
-
-  // Format amounts
-  const formattedVtru = parseFloat(ethers.utils.formatUnits(vtruAmount, 18));
-  const formattedUsdc = parseFloat(ethers.utils.formatUnits(usdcAmount, 6));
-
-  // Compute ratios
-  const usdcPerVtru = formattedUsdc / formattedVtru;
-  const vtruPerUsdc = formattedVtru / formattedUsdc;
-
-  // Format ratios
-  const formattedUsdcPerVtru = usdcPerVtru.toFixed(6);
-  const formattedVtruPerUsdc = vtruPerUsdc.toFixed(6);
-
-  // Construct the listing URL (direct link without listingId)
-  const listingURL = `https://otcmarket.vercel.app/`;
-
-  // Construct the explorer link
-  const explorerLink = `${EXPLORER_BASE_URL}/${transactionHash}`;
-
-  // Create an Embed Message for ListingCreated
-  const embed = new EmbedBuilder()
-    .setTitle('🚀 **New Listing Created!** 🚀')
-    .setColor('#00FF00')
-    .addFields(
-      { name: '🆔 Listing ID', value: `\`${listingId.toString()}\``, inline: true },
-      { name: '👤 Seller', value: `\`${shortenAddress(seller)}\``, inline: true },
-      { name: '💰 VTRU Amount', value: `\`${formattedVtru} VTRU\``, inline: true },
-      { name: '💵 USDC Amount', value: `\`${formattedUsdc} USDC\``, inline: true },
-      { name: '💱 USDC per VTRU', value: `\`${formattedUsdcPerVtru} USDC/VTRU\``, inline: true },
-      { name: '🔄 VTRU per USDC', value: `\`${formattedVtruPerUsdc} VTRU/USDC\``, inline: true },
-      { name: '🔗 View More', value: `[Visit the OTC Website](${listingURL})`, inline: false },
-      { name: '🔗 Explorer Link', value: `[View Transaction](${explorerLink})`, inline: false }
-    )
-    .setThumbnail('https://swap.vitruveo.xyz/images/coins/wVTRU.png')
-    .setTimestamp()
-    .setFooter({ text: 'VTRU Listings', iconURL: 'https://swap.vitruveo.xyz/images/coins/wVTRU.png' });
-
-  // Send the listing event to the listings channel with @here mention
-  const channel = client.channels.cache.get(DISCORD_CHANNEL_ID);
-  if (channel) {
-    channel.send({
-      content: '@here A new listing has been created!',
-      embeds: [embed],
-      allowed_mentions: { parse: ['everyone'] },
-    })
-    .then(() => console.log(`Posted Listing ID: ${listingId.toString()}`))
-    .catch(err => console.error('Error sending message to Discord:', err));
-  } else {
-    console.error("Discord channel not found for listings! Please check the channel ID.");
-  }
-}
-
-// Function to handle SwapCompleted event
-async function handleSwapCompleted(event) {
-  const { listingId, buyer, vtruAmount, usdcAmount } = event.args;
-  const transactionHash = event.transactionHash;
-
-  // Format amounts
-  const formattedVtru = parseFloat(ethers.utils.formatUnits(vtruAmount, 18));
-  const formattedUsdc = parseFloat(ethers.utils.formatUnits(usdcAmount, 6));
-
-  // Compute ratios
-  const usdcPerVtru = formattedUsdc / formattedVtru;
-  const vtruPerUsdc = formattedVtru / formattedUsdc;
-
-  // Format ratios
-  const formattedUsdcPerVtru = usdcPerVtru.toFixed(6);
-  const formattedVtruPerUsdc = vtruPerUsdc.toFixed(6);
-
-  // Create an Embed Message for SwapCompleted
-  const embed = new EmbedBuilder()
-    .setTitle('🔄 **Swap Completed!** 🔄')
-    .setColor('#FF0000')
-    .addFields(
-      { name: '🆔 Listing ID', value: `\`${listingId.toString()}\``, inline: true },
-      { name: '👤 Buyer', value: `\`${shortenAddress(buyer)}\``, inline: true },
-      { name: '💰 VTRU Amount Swapped', value: `\`${formattedVtru} VTRU\``, inline: true },
-      { name: '💵 USDC Amount Swapped', value: `\`${formattedUsdc} USDC\``, inline: true },
-      { name: '💱 USDC per VTRU', value: `\`${formattedUsdcPerVtru} USDC/VTRU\``, inline: true },
-      { name: '🔄 VTRU per USDC', value: `\`${formattedVtruPerUsdc} VTRU/USDC\``, inline: true },
-      { name: '🔗 Explorer Link', value: `[View Transaction](${EXPLORER_BASE_URL}/${transactionHash})`, inline: false }
-    )
-    .setThumbnail('https://swap.vitruveo.xyz/images/coins/wVTRU.png')
-    .setTimestamp()
-    .setFooter({ text: 'VTRU Swaps', iconURL: 'https://swap.vitruveo.xyz/images/coins/wVTRU.png' });
-
-  // Send the swap event to the swaps channel with @here mention
-  const swapChannel = client.channels.cache.get(SWAP_CHANNEL_ID);
-  if (swapChannel) {
-    swapChannel.send({
-      content: '@here A swap has been completed!',
-      embeds: [embed],
-      allowed_mentions: { parse: ['everyone'] },
-    })
-    .then(() => console.log(`Posted Swap Completed for Listing ID: ${listingId.toString()}`))
-    .catch(err => console.error('Error sending swap message to Discord:', err));
-  } else {
-    console.error("Discord channel not found for swaps! Please check the channel ID.");
-  }
-}
-
-// Function to handle OfferAccepted event
-async function handleOfferAccepted(event) {
-  const { listingId, seller, buyer, vtruAmount, usdcAmount } = event.args;
-  const transactionHash = event.transactionHash;
-
-  // Format amounts
-  const formattedVtru = parseFloat(ethers.utils.formatUnits(vtruAmount, 18));
-  const formattedUsdc = parseFloat(ethers.utils.formatUnits(usdcAmount, 6));
-
-  // Compute ratios
-  const usdcPerVtru = formattedUsdc / formattedVtru;
-  const vtruPerUsdc = formattedVtru / formattedUsdc;
-
-  // Format ratios
-  const formattedUsdcPerVtru = usdcPerVtru.toFixed(6);
-  const formattedVtruPerUsdc = vtruPerUsdc.toFixed(6);
-
-  // Create an Embed Message for OfferAccepted
-  const embed = new EmbedBuilder()
-    .setTitle('💸 **Offer Accepted!** 💸')
-    .setColor('#FFA500')
-    .addFields(
-      { name: '🆔 Listing ID', value: `\`${listingId.toString()}\``, inline: true },
-      { name: '👤 Seller', value: `\`${shortenAddress(seller)}\``, inline: true },
-      { name: '👤 Buyer', value: `\`${shortenAddress(buyer)}\``, inline: true },
-      { name: '💰 VTRU Amount Bought', value: `\`${formattedVtru} VTRU\``, inline: true },
-      { name: '💵 USDC Amount Paid', value: `\`${formattedUsdc} USDC\``, inline: true },
-      { name: '💱 USDC per VTRU', value: `\`${formattedUsdcPerVtru} USDC/VTRU\``, inline: true },
-      { name: '🔄 VTRU per USDC', value: `\`${formattedVtruPerUsdc} VTRU/USDC\``, inline: true },
-      { name: '🔗 Explorer Link', value: `[View Transaction](${EXPLORER_BASE_URL}/${transactionHash})`, inline: false }
-    )
-    .setThumbnail('https://swap.vitruveo.xyz/images/coins/wVTRU.png')
-    .setTimestamp()
-    .setFooter({ text: 'VTRU Purchases', iconURL: 'https://swap.vitruveo.xyz/images/coins/wVTRU.png' });
-
-  // Send the buy event to the buy channel with @here mention
-  const buyChannel = client.channels.cache.get(BUY_CHANNEL_ID);
-  if (buyChannel) {
-    buyChannel.send({
-      content: '@here An offer has been accepted!',
-      embeds: [embed],
-      allowed_mentions: { parse: ['everyone'] },
-    })
-    .then(() => console.log(`Posted OfferAccepted (Buy) for Listing ID: ${listingId.toString()}`))
-    .catch(err => console.error('Error sending buy message to Discord:', err));
-  } else {
-    console.error("Discord channel not found for buy events! Please check the channel ID.");
-  }
-}
-
-// Handle Discord Errors
-client.on('error', (error) => {
-  console.error('Discord Client Error:', error);
+// Start an Express server (if needed)
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
 
 // Login to Discord
