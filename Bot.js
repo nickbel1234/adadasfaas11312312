@@ -1,245 +1,152 @@
-// Import required modules
-const { Client, GatewayIntentBits, EmbedBuilder, ActivityType } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const { ethers } = require('ethers');
 const fs = require('fs');
-require('dotenv').config();
 
-// Initialize Discord Client with necessary intents
+// Bot Configuratie
+const DISCORD_TOKEN = 'YOUR_DISCORD_TOKEN';  // Vul je bot token in
+const DISCORD_CHANNEL_ID = 'YOUR_CHANNEL_ID';  // Vul je Discord kanaal ID in
+const SWAP_CHANNEL_ID = 'YOUR_SWAP_CHANNEL_ID'; // Vul je kanaal voor swaps in
+const BUY_CHANNEL_ID = 'YOUR_BUY_CHANNEL_ID'; // Vul je kanaal voor aanbiedingen in
+const CONTRACT_ADDRESS = 'YOUR_CONTRACT_ADDRESS'; // Vul je contract adres in
+
+// Provider en Contract Configuratie
+const provider = new ethers.JsonRpcProvider('https://mainnet.infura.io/v3/YOUR_INFURA_PROJECT_ID'); // Gebruik je Infura project ID
+const ABI = [
+  // Voeg hier je contract ABI toe (dit is een voorbeeld)
+  "event ListingCreated(uint256 indexed listingId, address indexed seller, uint256 vtruAmount, uint256 usdcAmount)",
+  "event SwapCompleted(uint256 indexed listingId, address indexed buyer, uint256 vtruAmount, uint256 usdcAmount)",
+  "event OfferAccepted(uint256 indexed listingId, address indexed seller, address indexed buyer, uint256 vtruAmount, uint256 usdcAmount)"
+];
+const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, provider);
+
+// Discord Client
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
 });
 
-// Load environment variables
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const VITRUVEO_RPC = process.env.VITRUVEO_RPC;
-const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
-const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;  // Channel for listing events
-const SWAP_CHANNEL_ID = process.env.SWAP_CHANNEL_ID;        // Channel for swap events
-const BUY_CHANNEL_ID = process.env.BUY_CHANNEL_ID;          // Channel for buy events
-const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL) || 30000; // Default to 30 seconds
-const LAST_BLOCK_FILE = 'lastBlock.json';
-const AVERAGES_FILE = 'averages.json';
-const EXPLORER_BASE_URL = 'https://explorer.vitruveo.xyz/tx';
-
-// ABI of the contract with relevant events (ListingCreated, SwapCompleted, and OfferAccepted)
-const abi = [
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "listingId",
-        "type": "uint256"
-      },
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "seller",
-        "type": "address"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "vtruAmount",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "usdcAmount",
-        "type": "uint256"
-      }
-    ],
-    "name": "ListingCreated",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "listingId",
-        "type": "uint256"
-      },
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "buyer",
-        "type": "address"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "usdcAmount",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "vtruAmount",
-        "type": "uint256"
-      }
-    ],
-    "name": "SwapCompleted",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "listingId",
-        "type": "uint256"
-      },
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "seller",
-        "type": "address"
-      },
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "buyer",
-        "type": "address"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "usdcAmount",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "vtruAmount",
-        "type": "uint256"
-      }
-    ],
-    "name": "OfferAccepted",
-    "type": "event"
-  }
-];
-
-// Initialize ethers.js Provider
-const provider = new ethers.providers.JsonRpcProvider(VITRUVEO_RPC);
-
-// Create Contract Instance
-const contract = new ethers.Contract(CONTRACT_ADDRESS, abi, provider);
-
-// Track Last Processed Block
-let lastBlock = 0;
-
-// Variables to track totals (using BigNumber)
+// Laatste verwerkte blok
+let lastBlock = 0;  // Dit kun je initialiseren met een opgeslagen waarde of 0
 let totalUsdcAmount = ethers.BigNumber.from(0);
 let totalVtruAmount = ethers.BigNumber.from(0);
 
-// Function to Load lastBlock and totals from file
+// Bestand om de staat op te slaan
+const stateFile = './state.json';
+
 const loadState = () => {
-  if (fs.existsSync(LAST_BLOCK_FILE)) {
-    try {
-      const data = fs.readFileSync(LAST_BLOCK_FILE, 'utf8');
-      const json = JSON.parse(data);
-      lastBlock = json.lastBlock || 0;
-      console.log(`Loaded lastBlock from file: ${lastBlock}`);
-    } catch (error) {
-      console.error('Error reading lastBlock file:', error);
-      process.exit(1);
-    }
-  }
-
-  if (fs.existsSync(AVERAGES_FILE)) {
-    try {
-      const data = fs.readFileSync(AVERAGES_FILE, 'utf8');
-      const json = JSON.parse(data);
-      totalUsdcAmount = ethers.BigNumber.from(json.totalUsdcAmount || "0");
-      totalVtruAmount = ethers.BigNumber.from(json.totalVtruAmount || "0");
-      console.log(`Loaded totals from file: ${JSON.stringify(json)}`);
-    } catch (error) {
-      console.error('Error reading averages file:', error);
-      console.error('Resetting totals to zero.');
-      totalUsdcAmount = ethers.BigNumber.from(0);
-      totalVtruAmount = ethers.BigNumber.from(0);
-    }
-  }
-};
-
-// Function to Save lastBlock and totals to file
-const saveState = () => {
-  try {
-    fs.writeFileSync(LAST_BLOCK_FILE, JSON.stringify({ lastBlock }));
-    fs.writeFileSync(AVERAGES_FILE, JSON.stringify({
-      totalUsdcAmount: totalUsdcAmount.toString(),
-      totalVtruAmount: totalVtruAmount.toString()
-    }));
-    console.log(`Saved lastBlock and totals.`);
-  } catch (error) {
-    console.error('Error writing state files:', error);
-  }
-};
-
-// Function to Shorten Ethereum Addresses (Optional)
-const shortenAddress = (address) => {
-  if (!address) return '';
-  return `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
-};
-
-// Function to Update Bot's Status
-const updateBotStatus = () => {
-  const totalUsdc = parseFloat(ethers.utils.formatUnits(totalUsdcAmount, 6));
-  const totalVtru = parseFloat(ethers.utils.formatUnits(totalVtruAmount, 18));
-
-  if (totalVtru > 0) {
-    const avgUsdcPerVtru = totalUsdc / totalVtru;
-    client.user.setActivity(`Avg: 1 VTRU = ${avgUsdcPerVtru.toFixed(6)} USDC`, { type: ActivityType.Watching });
-    console.log('Updated bot status with average swap ratios.');
+  if (fs.existsSync(stateFile)) {
+    const data = fs.readFileSync(stateFile);
+    const state = JSON.parse(data);
+    lastBlock = state.lastBlock;
   } else {
-    client.user.setActivity(`Monitoring VTRU/USDC swaps`, { type: ActivityType.Watching });
-    console.log('Set default bot status.');
+    lastBlock = 0;  // Stel in op 0 als er geen bestand is
   }
 };
 
-// Discord Bot Ready Event
-client.once('ready', async () => {
-  console.log('Bot is online and starting to poll for events!');
+const saveState = () => {
+  const state = { lastBlock };
+  fs.writeFileSync(stateFile, JSON.stringify(state));
+};
 
-  // Load lastBlock and totals from file if exists
-  loadState();
+// Event Handlers
+const shortenAddress = (address) => `${address.slice(0, 6)}...${address.slice(-4)}`;
 
+const pollEvents = async () => {
   try {
-    if (lastBlock === 0) {
-      // Initialize lastBlock to current block minus some buffer (e.g., 100 blocks)
-      const currentBlock = await provider.getBlockNumber();
-      lastBlock = currentBlock - 100; // Adjust the buffer as needed
-      console.log(`Starting polling from block number: ${lastBlock}`);
-      // Save the initial lastBlock
-      saveState();
+    console.log(`Polling events starting from block ${lastBlock + 1}...`);
+
+    // Haal het laatste blocknummer op
+    const currentBlock = await provider.getBlockNumber();
+
+    // Loop door alle blocks van de laatste naar het huidige
+    for (let blockNumber = lastBlock + 1; blockNumber <= currentBlock; blockNumber++) {
+      console.log(`Processing block ${blockNumber}...`);
+
+      // Haal logs op voor dit block
+      const logs = await contract.queryFilter({ fromBlock: blockNumber, toBlock: blockNumber });
+
+      for (const log of logs) {
+        const { event, args } = log;
+        const { listingId, seller, vtruAmount, usdcAmount, buyer } = args;
+
+        // Handel ListingCreated Event af
+        if (event === "ListingCreated") {
+          console.log(`Listing Created | Listing ID: ${listingId}, Seller: ${shortenAddress(seller)}, VTRU: ${ethers.utils.formatUnits(vtruAmount, 18)}, USDC: ${ethers.utils.formatUnits(usdcAmount, 6)}`);
+
+          // Stuur bericht naar Discord voor nieuwe listing
+          const listingEmbed = new EmbedBuilder()
+            .setTitle('New Listing Created')
+            .setDescription(`A new listing was created by ${shortenAddress(seller)}`)
+            .addFields(
+              { name: 'Listing ID', value: listingId.toString() },
+              { name: 'VTRU Amount', value: `${ethers.utils.formatUnits(vtruAmount, 18)} VTRU` },
+              { name: 'USDC Amount', value: `${ethers.utils.formatUnits(usdcAmount, 6)} USDC` }
+            )
+            .setColor('GREEN');
+          client.channels.cache.get(DISCORD_CHANNEL_ID).send({ embeds: [listingEmbed] });
+        }
+
+        // Handel SwapCompleted Event af
+        else if (event === "SwapCompleted") {
+          console.log(`Swap Completed | Listing ID: ${listingId}, Buyer: ${shortenAddress(buyer)}, VTRU: ${ethers.utils.formatUnits(vtruAmount, 18)}, USDC: ${ethers.utils.formatUnits(usdcAmount, 6)}`);
+
+          // Stuur bericht naar Discord voor swap
+          const swapEmbed = new EmbedBuilder()
+            .setTitle('Swap Completed')
+            .setDescription(`A swap was completed by ${shortenAddress(buyer)}`)
+            .addFields(
+              { name: 'Listing ID', value: listingId.toString() },
+              { name: 'VTRU Amount', value: `${ethers.utils.formatUnits(vtruAmount, 18)} VTRU` },
+              { name: 'USDC Amount', value: `${ethers.utils.formatUnits(usdcAmount, 6)} USDC` }
+            )
+            .setColor('BLUE');
+          client.channels.cache.get(SWAP_CHANNEL_ID).send({ embeds: [swapEmbed] });
+
+          // Update de totaalbedragen
+          totalUsdcAmount = totalUsdcAmount.add(usdcAmount);
+          totalVtruAmount = totalVtruAmount.add(vtruAmount);
+        }
+
+        // Handel OfferAccepted Event af
+        else if (event === "OfferAccepted") {
+          console.log(`Offer Accepted | Listing ID: ${listingId}, Seller: ${shortenAddress(seller)}, Buyer: ${shortenAddress(buyer)}, VTRU: ${ethers.utils.formatUnits(vtruAmount, 18)}, USDC: ${ethers.utils.formatUnits(usdcAmount, 6)}`);
+
+          // Stuur bericht naar Discord voor aanbod
+          const offerAcceptedEmbed = new EmbedBuilder()
+            .setTitle('Offer Accepted')
+            .setDescription(`An offer was accepted by ${shortenAddress(buyer)} for listing ${listingId}`)
+            .addFields(
+              { name: 'Listing ID', value: listingId.toString() },
+              { name: 'VTRU Amount', value: `${ethers.utils.formatUnits(vtruAmount, 18)} VTRU` },
+              { name: 'USDC Amount', value: `${ethers.utils.formatUnits(usdcAmount, 6)} USDC` }
+            )
+            .setColor('RED');
+          client.channels.cache.get(BUY_CHANNEL_ID).send({ embeds: [offerAcceptedEmbed] });
+        }
+      }
     }
+
+    // Update de laatste verwerkte block
+    lastBlock = currentBlock;
+    saveState();  // Sla de huidige block op als de laatste verwerkte block
+
   } catch (error) {
-    console.error('Error initializing lastBlock:', error);
-    process.exit(1);
+    console.error('Error occurred while polling events:', error);
   }
+};
 
-  // Start polling at defined intervals
-  setInterval(pollEvents, POLL_INTERVAL);
-  // Update bot status every minute
-  setInterval(updateBotStatus, 60000);
+// Start de polling om de 30 seconden
+setInterval(pollEvents, 30000);
+
+// Wanneer de bot inlogt
+client.once('ready', () => {
+  console.log(`Logged in as ${client.user.tag}`);
+  loadState();  // Laad de laatst verwerkte staat
+  pollEvents(); // Start de eerste keer pollen
 });
 
-// Express server (Optional, only if needed for Render)
-const express = require('express');
-const app = express();
-
-// Ensure Render provides the PORT environment variable
-const PORT = process.env.PORT || 3000;
-
-// Start an Express server (if needed)
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
-
-// Login to Discord
+// Login naar Discord
 client.login(DISCORD_TOKEN);
