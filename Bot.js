@@ -9,6 +9,15 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
 
+// Gebruik Render's dynamische poort (uit omgevingsvariabelen)
+const PORT = process.env.PORT || 3000;
+
+// Web server als je die wilt draaien (optioneel, render vereist soms een web server)
+app.listen(PORT, () => {
+  console.log(`Web server luistert op poort ${PORT}`);
+});
+
+
 
 // Load environment variables
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
