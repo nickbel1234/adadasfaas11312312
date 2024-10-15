@@ -10,15 +10,10 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
 
-// Initialize Express app
-const app = express();
 
 // Render expects a web server to bind to a port (use the port from environment variable)
 const PORT = process.env.PORT || 3000; // Fallback to port 3000 if PORT is not set
 
-app.get('/', (req, res) => {
-  res.send('Bot is running!');
-});
 
 // Listen to the specified port (for Render)
 app.listen(PORT, () => {
